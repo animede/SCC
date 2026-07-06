@@ -1,0 +1,227 @@
+/* SCC — Satellite Control Center  デザインシステム / レイアウト
+   ダークテーマ固定(管制室運用前提)。トークンはここが正。 */
+
+:root {
+  /* 面 */
+  --page:        #0b0d10;
+  --surface:     #14161a;
+  --surface-in:  #101216;   /* 凹面: 入力・チャート面 */
+  --surface-hi:  #1b1e24;   /* ホバー・強調面 */
+  /* インク */
+  --ink:         #e8eaed;
+  --ink-2:       #9aa0a8;
+  --ink-3:       #6b7076;
+  --hairline:    #262a30;
+  --hairline-2:  #31363e;
+  /* 系列色(順序固定・循環割当禁止) */
+  --s1: #3987e5;  /* 青 */
+  --s2: #199e70;  /* アクア */
+  --s3: #c98500;  /* 黄 */
+  --s4: #008300;  /* 緑 */
+  --s5: #9085e9;  /* 紫 */
+  --s6: #e66767;  /* 赤系 */
+  /* ステータス(専用・系列流用禁止) */
+  --ok:       #0ca30c;
+  --warn:     #fab219;
+  --serious:  #ec835a;
+  --crit:     #d03b3b;
+  /* 書体 */
+  --sans: system-ui, -apple-system, "Segoe UI", "Noto Sans JP", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Noto Sans Mono", monospace;
+  /* 寸法 */
+  --gap: 12px;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  overflow: hidden;
+  min-width: 1600px;
+}
+@media (max-width: 1919px) { body { overflow-x: auto; } }
+
+/* ---------- ヘッダバー ---------- */
+#topbar {
+  height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+}
+#topbar .brand {
+  display: flex; align-items: baseline; gap: 10px;
+  font-weight: 700; letter-spacing: .08em; font-size: 22px;
+}
+#topbar .brand small { color: var(--ink-3); font-weight: 400; letter-spacing: .02em; font-size: 12px; }
+.topbar-sep { width: 1px; height: 40px; background: var(--hairline-2); flex: none; }
+.topbar-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.topbar-item .lbl { font-size: 11px; color: var(--ink-3); letter-spacing: .12em; }
+.topbar-item .val { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; line-height: 1.1; }
+.topbar-item .val.small { font-size: 16px; }
+#topbar .spacer { flex: 1; }
+#tb-alarms { display: flex; gap: 8px; align-items: center; }
+
+/* ---------- メイングリッド ---------- */
+#grid {
+  height: calc(100vh - 72px);
+  display: grid;
+  gap: var(--gap);
+  padding: var(--gap);
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 7fr) minmax(0, 5fr) minmax(0, 3.2fr) minmax(0, 4.6fr);
+}
+#panel-map   { grid-column: 1 / 11;  grid-row: 1 / 3; }
+#panel-sky   { grid-column: 11 / 17; grid-row: 1 / 2; }
+#panel-farm  { grid-column: 11 / 17; grid-row: 2 / 3; }
+#panel-tlm   { grid-column: 17 / 25; grid-row: 1 / 4; }
+#panel-sched { grid-column: 1 / 17;  grid-row: 3 / 4; }
+#panel-cmd   { grid-column: 1 / 6;   grid-row: 4 / 5; }
+#panel-queue { grid-column: 6 / 10;  grid-row: 4 / 5; }
+#panel-data  { grid-column: 10 / 15; grid-row: 4 / 5; }
+#panel-term  { grid-column: 15 / 20; grid-row: 4 / 5; }
+#panel-log   { grid-column: 20 / 25; grid-row: 4 / 5; }
+
+/* ---------- パネル ---------- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.panel__title {
+  flex: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--hairline);
+  user-select: none;
+}
+.panel__title .t-extra { margin-left: auto; display: flex; align-items: center; gap: 8px; font-weight: 400; letter-spacing: normal; }
+.panel__body { flex: 1; min-height: 0; position: relative; }
+.panel__body--pad { padding: 12px 14px; overflow: auto; }
+canvas.fill { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* ---------- 汎用部品 ---------- */
+.readout { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  border: 1px solid var(--hairline-2);
+  color: var(--ink-2);
+  background: var(--surface-in);
+}
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.badge--ok      { color: var(--ok);      border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.badge--ok::before      { background: var(--ok); }
+.badge--warn    { color: var(--warn);    border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.badge--warn::before    { background: var(--warn); }
+.badge--serious { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 40%, transparent); }
+.badge--serious::before { background: var(--serious); }
+.badge--crit    { color: var(--crit);    border-color: color-mix(in srgb, var(--crit) 40%, transparent); }
+.badge--crit::before    { background: var(--crit); }
+
+.btn {
+  font-family: var(--sans);
+  font-size: 12px; font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-hi);
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  letter-spacing: .04em;
+  transition: background .12s, border-color .12s;
+}
+.btn:hover { background: #232730; }
+.btn:disabled { opacity: .38; cursor: not-allowed; }
+.btn--primary { background: #1c4f8f; border-color: #2a6cbf; }
+.btn--primary:hover { background: #235ea8; }
+.btn--danger { background: #6e2020; border-color: #a23434; }
+.btn--danger:hover { background: #842828; }
+.btn--armed { background: var(--crit); border-color: var(--crit); color: #fff; animation: arm-blink 1s step-end infinite; }
+@keyframes arm-blink { 50% { filter: brightness(.65); } }
+.btn--sm { padding: 4px 9px; font-size: 11px; }
+
+.chip {
+  font-size: 11px; padding: 3px 10px;
+  border: 1px solid var(--hairline-2); border-radius: 999px;
+  background: transparent; color: var(--ink-2); cursor: pointer;
+}
+.chip.on { background: var(--surface-hi); color: var(--ink); border-color: var(--s1); }
+
+select, input[type="text"], input[type="number"] {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface-in);
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+select:focus, input:focus { outline: 1px solid var(--s1); }
+
+.bar { height: 6px; border-radius: 3px; background: var(--surface-in); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--s1); border-radius: 3px; transition: width .3s; }
+
+table.mono-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; }
+table.mono-table th {
+  text-align: left; font-family: var(--sans); font-weight: 600; font-size: 10px;
+  letter-spacing: .1em; color: var(--ink-3); padding: 4px 8px;
+  border-bottom: 1px solid var(--hairline); position: sticky; top: 0; background: var(--surface);
+}
+table.mono-table td { padding: 4px 8px; border-bottom: 1px solid var(--hairline); color: var(--ink-2); white-space: nowrap; }
+table.mono-table td:first-child { color: var(--ink-3); }
+
+/* ツールチップ(チャート・地図共通) */
+.viz-tooltip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  background: #1e222aee;
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--ink);
+  box-shadow: 0 4px 16px #0008;
+  max-width: 320px;
+}
+.viz-tooltip .tt-title { font-weight: 600; margin-bottom: 3px; }
+.viz-tooltip .tt-row { display: flex; gap: 10px; justify-content: space-between; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.viz-tooltip .tt-row b { color: var(--ink); font-weight: 500; }
+
+/* スクロールバー */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--hairline-2); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* モーダル(確認ダイアログ) */
+#modal-root .modal-backdrop {
+  position: fixed; inset: 0; background: #000a; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+#modal-root .modal {
+  background: var(--surface); border: 1px solid var(--hairline-2); border-radius: 10px;
+  padding: 22px 26px; min-width: 420px; max-width: 560px;
+}
+#modal-root .modal h3 { font-size: 15px; margin-bottom: 10px; }
+#modal-root .modal p { color: var(--ink-2); font-size: 13px; line-height: 1.6; margin-bottom: 18px; }
+#modal-root .modal .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }

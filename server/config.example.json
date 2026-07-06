@@ -1,0 +1,21 @@
+{
+  "rotators": {
+    "GS-TKY": { "host": "127.0.0.1", "port": 4533 }
+  },
+
+  "_obc_comment": "obc キー省略、または mode:'sim' の場合は内蔵の擬似OBCシェル(js/core/satshell.js)を使う。実機OBCに繋ぐ場合のみ mode:'ssh' + host を指定する(要 util-linux の `script` コマンド、サーバ機にインストール済のこと)。",
+  "obc": {
+    "mode": "sim"
+  },
+
+  "_obc_ssh_example_comment": "実機に繋ぐ場合は上の obc を消して代わりに以下のような設定にする:",
+  "_obc_ssh_example": {
+    "obc": {
+      "mode": "ssh",
+      "host": "192.168.1.50",
+      "user": "ops",
+      "port": 22,
+      "sshArgs": []
+    }
+  }
+}

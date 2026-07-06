@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>SCC — HIKARI-1 Ground Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">SCC <small>SATELLITE CONTROL CENTER</small></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">
+    <span class="lbl">SPACECRAFT</span>
+    <span class="val small" id="tb-sat">HIKARI-1 <span class="badge badge--ok" id="tb-sat-status">NOMINAL</span></span>
+  </div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item"><span class="lbl">UTC</span><span class="val" id="tb-utc">--:--:--</span></div>
+  <div class="topbar-item"><span class="lbl">JST</span><span class="val" id="tb-jst">--:--:--</span></div>
+  <div class="topbar-item"><span class="lbl">MET</span><span class="val small" id="tb-met">---</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">
+    <span class="lbl">NEXT AOS</span>
+    <span class="val" id="tb-aos" style="color:var(--s1)">--:--</span>
+  </div>
+  <div class="topbar-item"><span class="lbl">STATION / MAX EL</span><span class="val small" id="tb-aos-info">---</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">
+    <span class="lbl">CONTACT — 連続通信</span>
+    <span class="val readout" id="tb-contact">---</span>
+  </div>
+  <div class="topbar-item"><span class="lbl">HANDOVER</span><span class="val small readout" id="tb-chain">---</span></div>
+  <div class="spacer"></div>
+  <div id="tb-alarms"></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">
+    <span class="lbl">DATA SOURCE</span>
+    <span class="val small readout" id="tb-net">---</span>
+  </div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">
+    <span class="lbl">SIM SPEED</span>
+    <span id="tb-speed"></span>
+  </div>
+</header>
+
+<main id="grid">
+  <section class="panel" id="panel-map">
+    <div class="panel__title">GROUND TRACK — 地上軌跡
+      <span class="t-extra readout" id="map-readout"></span>
+    </div>
+    <div class="panel__body"><canvas class="fill" id="map-canvas"></canvas></div>
+  </section>
+
+  <section class="panel" id="panel-sky">
+    <div class="panel__title">SKY PLOT / ANTENNA CONTROL — 追尾制御
+      <span class="t-extra"><select id="sky-station"></select></span>
+    </div>
+    <div class="panel__body" id="sky-body"></div>
+  </section>
+
+  <section class="panel" id="panel-farm">
+    <div class="panel__title">ANTENNA FARM — アンテナ統合管理</div>
+    <div class="panel__body panel__body--pad" id="farm-body"></div>
+  </section>
+
+  <section class="panel" id="panel-tlm">
+    <div class="panel__title">TELEMETRY — テレメトリ</div>
+    <div class="panel__body" id="tlm-body"></div>
+  </section>
+
+  <section class="panel" id="panel-sched">
+    <div class="panel__title">PASS SCHEDULE — パス計画 (24H)</div>
+    <div class="panel__body"><canvas class="fill" id="sched-canvas"></canvas></div>
+  </section>
+
+  <section class="panel" id="panel-cmd">
+    <div class="panel__title">COMMAND CONSOLE — コマンド送信</div>
+    <div class="panel__body panel__body--pad" id="cmd-body"></div>
+  </section>
+
+  <section class="panel" id="panel-queue">
+    <div class="panel__title">COMMAND QUEUE / HISTORY — キュー・履歴</div>
+    <div class="panel__body" id="queue-body"></div>
+  </section>
+
+  <section class="panel" id="panel-data">
+    <div class="panel__title">DOWNLINK / SOFTWARE UPDATE — データ受信・更新管理</div>
+    <div class="panel__body panel__body--pad" id="data-body"></div>
+  </section>
+
+  <section class="panel" id="panel-term">
+    <div class="panel__title">OBC CONSOLE — 衛星コンピュータ (SSH)
+      <span class="t-extra" id="term-extra"></span>
+    </div>
+    <div class="panel__body" id="term-body"></div>
+  </section>
+
+  <section class="panel" id="panel-log">
+    <div class="panel__title">EVENT LOG — イベントログ
+      <span class="t-extra" id="log-filters"></span>
+    </div>
+    <div class="panel__body" id="log-body"></div>
+  </section>
+</main>
+
+<div id="modal-root"></div>
+<div id="tooltip-root"></div>
+
+<script src="js/vendor/satellite.min.js"></script>
+<script src="js/core/state.js"></script>
+<script src="js/core/orbit.js"></script>
+<script src="js/core/mockdata.js"></script>
+<script src="js/core/proto.js"></script>
+<script src="js/core/satshell.js"></script>
+<script src="js/core/wsclient.js"></script>
+<script src="js/panels/geodata.js"></script>
+<script src="js/panels/map.js"></script>
+<script src="js/panels/antenna.js"></script>
+<script src="js/panels/telemetry.js"></script>
+<script src="js/panels/ops.js"></script>
+<script src="js/panels/terminal.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
