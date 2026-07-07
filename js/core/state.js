@@ -55,6 +55,7 @@
     commandQueue: [],
     downlink: { sessions: [], files: [], totalMB: 0, rate: 0 },
     swUpdate: { current: "v2.4.1", available: "v2.5.0", state: "IDLE", pct: 0 },
+    od: { state: "IDLE", nObs: 0, nStations: 0, sigmaPosM: NaN, rmsM: NaN },
     history: [],
   };
 

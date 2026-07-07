@@ -8,6 +8,10 @@
    6. HTTP GET / が index.html を返すことを検証
    7. OBC 端末ブリッジ (擬似シェル/satshell): term-open → 初回 term-output(バナー/プロンプト)、
       term-input "uname -a" → 応答に "hikari-obc"、"tlm eps" → 応答に電圧らしき数値/"SoC" を検証
+   8. 観測ベース軌道決定 (SCC.od): 実行誤差込みの真の軌道に対し、2局からの range/az/el 観測
+      (シード付き乱数で再現性確保)をバッチ最小二乗フィットし、収束後のTLEが真の軌道に
+      90分(1周回)にわたって高精度追従することを検証(js/core/*.js を直接ロードする単体テスト、
+      server.mjs 子プロセスとは独立)。
    → 全部PASSしたら "ALL PASS" を出力して終了 (exit 0)。失敗があれば失敗内容を出して exit 1。 */
 "use strict";
 
@@ -18,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -27,6 +32,126 @@ const FAKE_AZ = 123.4, FAKE_EL = 45.6;
 let failed = false;
 function fail(msg) { failed = true; console.error("FAIL -", msg); }
 function ok(msg) { console.log("ok   -", msg); }
+
+/* ---------- OD (観測ベース軌道決定) セルフテスト ----------
+   js/core/state.js・orbit.js・orbitdet.js を server.mjs と同じ手法(globalThisへeval)で
+   直接ロードして検証する(server.mjs の子プロセスとは無関係、このプロセス内で完結)。
+   vm モジュールの別レルムだと satellite.js 内部の instanceof 等が壊れるため使わない。
+   シード付き簡易LCGで観測ノイズを再現可能にする。 */
+function runOdTest() {
+  const require_ = createRequire(import.meta.url);
+  globalThis.window = globalThis;
+  globalThis.satellite = require_(path.join(ROOT, "js/vendor/satellite.min.js"));
+  for (const f of ["js/core/state.js", "js/core/orbit.js", "js/core/orbitdet.js"]) {
+    (0, eval)(fs.readFileSync(path.join(ROOT, f), "utf8"));
+  }
+  const SCC = globalThis.SCC;
+
+  // シード付き簡易LCG (再現性確保)
+  function makeLcg(seed) {
+    let s = seed >>> 0;
+    return function () { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  }
+  const rand = makeLcg(58);
+  function gauss(sigma) {
+    let u = 0, v = 0;
+    while (u === 0) u = rand();
+    while (v === 0) v = rand();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * sigma;
+  }
+
+  const defaultTle = SCC.orbit.getTLE();
+  const burnDate = new Date(Date.UTC(2026, 6, 6, 0, 0, 0));
+
+  // 真の軌道: along 5.1 m/s を指定方向から 0.3° 傾けた実行誤差込みで適用
+  const trueOrbit = SCC.createOrbit();
+  trueOrbit.setTLE(defaultTle.line1, defaultTle.line2);
+  const dvTrueMag = 5.1 / 1000, tiltRad = 0.3 * Math.PI / 180;
+  const okTrue = trueOrbit.applyBurn(
+    { radial: dvTrueMag * Math.sin(tiltRad), along: dvTrueMag * Math.cos(tiltRad), cross: 0 },
+    burnDate
+  );
+  if (okTrue) ok("OD: 真の軌道への実行誤差込みburn適用に成功"); else fail("OD: 真の軌道へのburn適用に失敗");
+
+  // 地上予測: 誤差なし 5.0 m/s along を prior として od.reset
+  const priorOrbit = SCC.createOrbit();
+  priorOrbit.setTLE(defaultTle.line1, defaultTle.line2);
+  const okPrior = priorOrbit.applyBurn({ radial: 0, along: 5.0 / 1000, cross: 0 }, burnDate);
+  if (!okPrior) fail("OD: 地上予測軌道へのburn適用に失敗");
+  const priorTle = priorOrbit.getTLE();
+
+  SCC.od.reset([priorTle.line1, priorTle.line2], burnDate);
+
+  const stations = [
+    { id: "GS-TKY", lat: 35.66, lon: 139.32, altKm: 0 },
+    { id: "GS-HKD", lat: 43.33, lon: 145.58, altKm: 0 },
+  ];
+
+  // 2局の可視パスを burnDate から探索し、5秒間隔でノイズ付き観測を生成
+  // (観測ウィンドウは複数パスにまたがる約3.5時間分: 平均運動の推定精度確保に必要)
+  let allObs = [];
+  for (const st of stations) {
+    const passes = trueOrbit.predictPasses(st, burnDate, 24);
+    for (const p of passes) {
+      let t = p.aos.getTime();
+      while (t <= p.los.getTime()) {
+        const look = trueOrbit.lookAngles(st, new Date(t));
+        if (look.el > SCC.orbit.MIN_EL) {
+          allObs.push({
+            tMs: t,
+            station: st,
+            rangeKm: look.range + gauss(0.02),
+            azDeg: look.az + gauss(0.15),
+            elDeg: look.el + gauss(0.15),
+          });
+        }
+        t += 5000;
+      }
+    }
+  }
+  allObs.sort((a, b) => a.tMs - b.tMs);
+  const WINDOW_MS = 3.5 * 3600 * 1000;
+  const used = allObs.filter(o => o.tMs - allObs[0].tMs <= WINDOW_MS);
+  const spanS = (used[used.length - 1].tMs - used[0].tMs) / 1000;
+  const nStations = new Set(used.map(o => o.station.id)).size;
+  if (used.length >= 60 && spanS >= 300) ok(`OD: 観測生成 ${used.length}点 / スパン${spanS.toFixed(0)}秒 / ${nStations}局`);
+  else fail(`OD: 観測条件不足 (n=${used.length}, span=${spanS})`);
+
+  for (const o of used) SCC.od.addObs(o);
+
+  // レート制限(シム15秒 + 実時間1秒)を回避するため時刻を進めながら step を繰り返し呼ぶ
+  let fit = null;
+  let stepMs = burnDate.getTime();
+  let iter = 0;
+  while (!fit && iter < 3000) {
+    stepMs += 20000;
+    fit = SCC.od.step(stepMs);
+    iter++;
+  }
+  if (!fit) { fail("OD: フィットが収束しなかった"); return; }
+  ok(`OD: フィット収束 — rms=${fit.stats.rmsM.toFixed(1)}m σpos=${fit.stats.sigmaPosM.toFixed(1)}m ` +
+     `nObs=${fit.stats.nObs} nStations=${fit.stats.nStations} corr=${fit.stats.corrKm.toFixed(2)}km`);
+
+  // 収束後のTLEで新インスタンスを作り、1周回分(90分, 60秒刻み)の各時刻で真の軌道との位置差を検証
+  const fitted = SCC.createOrbit();
+  fitted.setTLE(fit.tle[0], fit.tle[1]);
+  let maxErrKm = 0;
+  for (let i = 0; i <= 90; i++) {
+    const t = new Date(burnDate.getTime() + i * 60000);
+    const a = trueOrbit.stateAt(t), b = fitted.stateAt(t);
+    if (!a || !b) { fail(`OD: stateAt失敗 (i=${i})`); return; }
+    const d = Math.hypot(a.r.x - b.r.x, a.r.y - b.r.y, a.r.z - b.r.z);
+    if (d > maxErrKm) maxErrKm = d;
+  }
+  console.log(`     OD: 1周回(90分)での真の軌道との最大位置誤差 = ${maxErrKm.toFixed(3)} km`);
+  if (maxErrKm < 1.0) ok(`OD: 収束後の最大位置誤差 < 1.0km (実測 ${maxErrKm.toFixed(3)}km)`);
+  else fail(`OD: 収束後の最大位置誤差が1.0kmを超過 (実測 ${maxErrKm.toFixed(3)}km)`);
+
+  // OD収束後は IDLE に戻り、観測バッファがクリアされていること
+  const st = SCC.od.status();
+  if (st.state === "IDLE" && st.nObs === 0) ok("OD: 収束後 IDLE へ復帰し観測バッファをクリア");
+  else fail(`OD: 収束後の状態が不正: ${JSON.stringify(st)}`);
+}
 
 /* ---------- proto デコード (js/core/proto.js と同一仕様の最小実装) ---------- */
 function decodeVal(v) {
@@ -295,6 +420,13 @@ async function main() {
 
   child._expectedExit = true;
   cleanup();
+
+  /* ---------- 9. 観測ベース軌道決定 (OD) ---------- */
+  try {
+    runOdTest();
+  } catch (e) {
+    fail("OD test threw: " + (e && e.stack || e));
+  }
 
   if (failed) {
     console.log("SOME TESTS FAILED");

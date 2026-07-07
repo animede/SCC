@@ -43,7 +43,7 @@ const args = parseArgs(process.argv.slice(2));
 const require_ = createRequire(import.meta.url);
 globalThis.window = globalThis;                       // state.js が window.SCC に登録するため
 globalThis.satellite = require_(ROOT + "/js/vendor/satellite.min.js"); // orbit.js が参照(UMD)
-for (const f of ["js/core/state.js", "js/core/orbit.js", "js/core/mockdata.js", "js/core/proto.js", "js/core/satshell.js"])
+for (const f of ["js/core/state.js", "js/core/orbit.js", "js/core/orbitdet.js", "js/core/mockdata.js", "js/core/proto.js", "js/core/satshell.js"])
   (0, eval)(fs.readFileSync(ROOT + "/" + f, "utf8"));
 
 const SCC = globalThis.SCC;

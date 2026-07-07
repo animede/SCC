@@ -25,6 +25,7 @@
     const satStatus = document.getElementById("tb-sat-status");
     const alarmsEl = document.getElementById("tb-alarms");
     const netEl = document.getElementById("tb-net");
+    const odEl = document.getElementById("tb-od");
 
     SCC.bus.on("tick", () => {
       netEl.textContent = SCC.net ? SCC.net.label() : "LOCAL SIM";
@@ -73,6 +74,18 @@
       } else {
         contactEl.textContent = "---";
         chainEl.textContent = "---";
+      }
+
+      // OD (観測ベース軌道決定) ステータスチップ
+      const od = S.od || { state: "IDLE", nObs: 0, sigmaPosM: NaN };
+      if (od.state === "COLLECTING") {
+        odEl.textContent = isFinite(od.sigmaPosM)
+          ? `OD n=${od.nObs} σ=${od.sigmaPosM.toFixed(0)}m`
+          : `OD n=${od.nObs} 収集中`;
+        odEl.style.color = "var(--warn)";
+      } else {
+        odEl.textContent = "EST OK";
+        odEl.style.color = "var(--ink-3)";
       }
 
       // 衛星ステータス = 未確認アラームの最大レベル

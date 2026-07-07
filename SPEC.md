@@ -38,7 +38,8 @@
 ```
 ┌──────────────────────────── ヘッダバー (72px) ────────────────────────────┐
 │ SCC ロゴ | 衛星名/状態 | UTC時計 | JST時計 | MET | 次パスAOSカウントダウン │
-│          | アラームサマリ | シミュレーション速度 (×1/×10/×60/×600)        │
+│          | ODステータス(EST OK / OD n=NN σ=XXXm) | アラームサマリ         │
+│          | シミュレーション速度 (×1/×10/×60/×600)                        │
 ├──────────────┬──────────────────────┬───────────────────────────────────┤
 │              │                      │                                   │
 │  世界地図     │   スカイプロット      │   テレメトリ                       │
@@ -127,17 +128,33 @@
 ```
 
 ### 4.3 SCC.orbit — 軌道ユーティリティ(orbit.js)
+フェーズ3(観測ベースOD)により、内部実装は `SCC.createOrbit()` ファクトリに包まれた。
+`SCC.orbit` はそのファクトリで生成された既定インスタンス(従来どおりのシングルトン、公開APIは
+完全互換)。`SCC.createOrbit()` を追加で呼べば、互いに独立した軌道インスタンスを複数生成できる
+(mockdata.js の「真の軌道」「地上予測軌道」の分離、orbitdet.js の候補評価用インスタンス等に使用)。
+
 - `SCC.orbit.propagate(date)` → `{lat, lon, alt, eci, vel}`
+- `SCC.orbit.stateAt(date)` → `{r:{x,y,z}, v:{x,y,z}} | null` — ECI状態ベクトルの生値(km, km/s)。
+  ODの初期推定値取得等に使用。
 - `SCC.orbit.lookAngles(stationLatLon, date)` → `{az, el, range}` [deg, deg, km]
 - `SCC.orbit.groundTrack(date, minutes, stepSec)` → `[[lat,lon],...]`
 - `SCC.orbit.predictPasses(station, fromDate, hours)` → pass配列
 - `SCC.orbit.footprintRadiusDeg(alt)` → 可視円半径 [deg](地図の可視域円用)
+- `SCC.orbit.tleFromState(r, v, epochDate)` → `[l1, l2] | null` — ECI状態ベクトル(km, km/s)から
+  TLE行対を作る(rv2coe→coe2tle、satrecには適用しない)。e≥1 や非有限値の場合は `null`。
+  `applyBurn` 内部もこの関数を使う。
 - `SCC.orbit.applyBurn(dvRsw, atDate)` → `boolean` — スラスタ噴射の反映API。`atDate` 時点の
   ECI状態ベクトル(位置・速度)に、RSW系(Radial=地心方向 / along-track=進行方向 / cross-track=軌道面法線)
-  で与えたインパルスΔv `{radial, along, cross}` [km/s] を加算 → 新しい状態ベクトルを古典軌道要素
-  (a, e, i, Ω, ω, M)に変換(rv2coe)→ TLE行に再エンコード(epoch=`atDate`)→ 内部的に `setTLE()` 相当で
-  satrecを差し替える。オスキュレーティング要素をそのまま新epochの平均要素とみなす簡易変換(J2等の
-  摂動再フィットは行わない、シミュレータ相応の近似)。失敗時(数値異常等)は既存軌道を維持し `false`。
+  で与えたインパルスΔv `{radial, along, cross}` [km/s] を加算 → `tleFromState` でTLE行に再エンコード
+  (epoch=`atDate`)→ 内部的に `setTLE()` を呼びsatrecを差し替える。オスキュレーティング要素をそのまま
+  新epochの平均要素とみなす簡易変換(SGP4のKozai平均運動への近似的な逆変換は行うが、J2等の長期・短期
+  周期項の再フィットは行わない、シミュレータ相応の近似)。失敗時(数値異常等)は既存軌道を維持し `false`。
+
+  **重要**: 本近似には既知の精度限界がある。エポックの異なる2つのTLEを本APIで往復生成すると、
+  数時間〜1周回のスケールで数km〜十数km程度の位置誤差が蓄積し得る(TLE=SGP4の平均要素であり、
+  瞬間の状態ベクトルとの変換は本質的に近似であるため)。観測ベースOD(§4.6)は、比較的長時間
+  (複数パス、300秒〜数時間)の観測窓を使うことでこの誤差を実用上十分小さく抑えている
+  (§4.6のフィット条件を参照)。
 
 ### 4.4 操作API(mockdata.js が実装、パネルから呼ぶ)
 - `SCC.ops.setSimSpeed(n)`
@@ -149,9 +166,46 @@
 - `SCC.ops.sendCommand("PROP_BURN", args, stationId)` — args形式 `"<dir> <dv_mps>"`
   (dir: `PRO`/`RETRO`/`RAD_IN`/`RAD_OUT`/`NORM_POS`/`NORM_NEG`)。他コマンドと同じくキュー→SENT→ACK→EXEC
   で進行するが、EXEC時の `applyCommandEffect`(mockdata.js)が dir+dv を RSW ベクトルへ変換して
-  `SCC.orbit.applyBurn()` を呼ぶ点が異なる。呼び出し直後に `recalcPasses()` / `recalcTrack()` を強制実行し
-  (通常の30分/60秒周期を待たず)、地図・スカイプロット・パススケジュール・ヘッダAOSカウントダウンを
-  新軌道へ即時整合させる。新TLEのepoch/revに応じて `state.sat.orbitNo` が不連続に変わり得る。
+  軌道に反映する点が異なる。フェーズ3(観測ベースOD)により、この反映は「真の軌道」と
+  「地上予測軌道」の二段階になった(詳細は§6):
+  1. 実行誤差込みのΔvを `trueOrbit.applyBurn()`(mockdata.js内、真の軌道専用インスタンス)に適用。
+  2. コマンド通り(誤差なし)のΔvを作業インスタンスに適用した結果を `SCC.orbit.setTLE()` で
+     地上表示軌道へ即時反映 → `recalcPasses()` / `recalcTrack()` を強制実行(通常の30分/60秒周期を
+     待たず)、地図・スカイプロット・パススケジュール・ヘッダAOSカウントダウンを新軌道へ即時整合。
+  3. `SCC.od.reset()` で観測ベース軌道決定(OD)を開始。以後パス中に観測が蓄積され、フィットが
+     収束すると `SCC.orbit` のTLEが実行誤差込みの真の軌道に近い値へ再補正される(§4.6, §6)。
+  新TLEのepoch/revに応じて `state.sat.orbitNo` が不連続に変わり得る。
+
+### 4.6 SCC.od — 観測ベース軌道決定(orbitdet.js)
+`SCC.state` に依存しない純粋な推定モジュール。satellite.js グローバルと `SCC.createOrbit` を
+利用する。ブラウザ・Nodeサーバの両方で同一実装が動く(window/globalThisの扱いはorbit.js等と同様)。
+
+- `SCC.od.reset(priorTle, burnDate)` — 観測バッファをクリアし `COLLECTING` 状態へ遷移。
+  `priorTle=[l1, l2]` は初期推定(地上の予測軌道)として保持される。`priorTle` が無ければ `IDLE`。
+- `SCC.od.addObs(obs)` — 観測を1件追加。
+  `obs = {tMs, station:{id,lat,lon,altKm}, rangeKm, azDeg, elDeg}`。バッファ上限500件
+  (古いものから破棄)。
+- `SCC.od.step(nowMs)` — レート制限付きでフィットを試行する。シミュレーション時間で前回試行から
+  15秒以上、かつ実時間(`performance.now()`/`Date.now()`)で1秒以上経過した場合のみ実際に計算する。
+  収束・採用条件を満たせば `{tle:[l1,l2], stats:{rmsM, sigmaPosM, nObs, nStations, corrKm}}` を返し
+  `IDLE` へ戻る(観測バッファも解放)。それ以外は `null`。
+- `SCC.od.status()` → `{state:'IDLE'|'COLLECTING', nObs, nStations, sigmaPosM, rmsM}`
+  (UI表示用のプレーンオブジェクト。直近のフィット試行が未収束でも `sigmaPosM`/`rmsM` は
+  参考値として見える場合がある)。
+
+**推定アルゴリズム(バッチ最小二乗 / Gauss-Newton + Levenberg-Marquardt)**:
+推定パラメータ `x = [rx,ry,rz,vx,vy,vz]`(ECI, km・km/s。エポック=最初の観測時刻)。初期値は
+`priorTle` の軌道を `stateAt(エポック)` で伝播した状態。候補xは `tleFromState` でTLE化し、作業用
+`createOrbit()` インスタンスに `setTLE` した上で `lookAngles` により各観測時刻のrange/az/elを予測する。
+残差は無次元化(range: σr=0.02km, el: σa=0.15°, az: ±180°ラップ後 cos(el) を掛けてσaで正規化)。
+ヤコビアンは数値前進差分(位置摂動1.0km、速度摂動0.001km/s — TLEの角度4桁量子化≈12mを十分上回る幅)。
+正規方程式は6×6ガウス消去(部分ピボット)で解き、LMのλは初期1e-3・コスト減で÷10・増で×10
+(上限1e3で発散扱いとしそのtickのフィットを断念、次回の`step`で再試行)。反復上限8、
+`|Δr|<10m` かつ `|Δv|<1cm/s` で収束。
+
+**採用(収束確定)条件**: 観測≥30 かつ 観測時間スパン≥120秒 かつ 反復収束 かつ `sigmaPosM<500m`。
+加えて 局数≥2 または スパン≥300秒。フィットに使う観測は直近150点まで(観測窓が複数パスに
+またがるほど平均運動の推定精度が向上し、TLE化に伴う近似誤差(§4.3)の影響を抑えられる)。
 
 ### 4.5 パネル登録
 各パネルファイルは `SCC.panels.XXX = { init(rootEl) }` を登録。main.js が DOMContentLoaded 後に
@@ -238,10 +292,48 @@
 - コマンド: SENT→(1-3s)→ACK→(2-5s)→EXEC。5%で FAIL。対応する log を emit。
 - 初期状態: 起動時に「もうすぐ次のパスが来る」状態(次AOSまで5〜10分)になるよう simTime の
   エポックを調整すると画面が映える。
-- `PROP_BURN` EXEC: `SCC.orbit.applyBurn()`(§4.3)適用後、`recalcPasses()` / `recalcTrack()` を
-  即時強制実行(通常の30分/60秒周期を待たない)。過去分の地上軌跡(実績)は書き換えず、未来分のみ
-  新要素で再生成する。ログに新軌道要素(高度・周期)を出力(例:「PROP_BURN 実行完了 — Δv=5.2m/s PRO,
-  高度≈421km 周期≈93.0min」)。
+
+### 6.1 「物理的現実」と「地上の知識」の分離(フェーズ3: 観測ベースOD)
+
+mockdata.js は2つの軌道インスタンスを使い分ける:
+
+- **trueOrbit**(mockdata.js冒頭で `SCC.createOrbit()` により生成、init()で `SCC.orbit` と同一TLEに
+  初期化) = 物理的現実(衛星の実位置・実際に飛んでくる電波)。メインループの伝播
+  (`S.sat.pos`/`eci`/`vel`)、`stepAntenna` 内の自動追尾ターゲット算出とリンク品質判定(電波の
+  閉ループ追尾なので真値を使う)、`stepTelemetry` の食判定、`checkPassEdges` の可視判定、
+  OD向け観測の生成に使う。
+- **SCC.orbit** = 地上の知識(予測軌道・スケジュール)。`recalcPasses`/`recalcTrack`/`orbitNumber`/
+  `ALT`/`PERIOD` など、画面表示・パス予測に使う従来どおりのインスタンス。
+
+### 6.2 `PROP_BURN` EXEC → 観測ベース軌道決定(OD)のフロー
+
+1. **実行誤差の生成**: スラスタ噴射には実行誤差があるため、指定Δvをそのまま真の軌道に適用しない。
+   大きさに `×(1+N(0,0.02))` の乗算誤差、方向に標準偏差0.5°相当の微小な傾き(指定RSW軸に直交する
+   2軸成分へ `N(0, dv·sin(0.5°))` を加える簡易実装)を加える。ガウス乱数はBox-Muller法で生成。
+2. **真の軌道の更新**: 実行誤差込みのΔvを `trueOrbit.applyBurn(dv, atDate)` に適用。失敗時
+   (数値異常)は従来どおりエラーログを出し中断する。
+3. **地上予測の即時整合**: コマンド通り(誤差なし)のΔvを作業用インスタンス
+   (`scratch = SCC.createOrbit(); scratch.setTLE(...SCC.orbitの現在TLE...)`)に適用し、その結果を
+   `SCC.orbit.setTLE()` で地上表示軌道へ反映 → `recalcPasses()` / `recalcTrack()` を即時強制実行
+   (通常の30分/60秒周期を待たない)。過去分の地上軌跡(実績)は書き換えず、未来分のみ新要素で
+   再生成する。ログに新軌道要素(高度・周期)を出力(例:「PROP_BURN 実行完了 — Δv=5.2m/s PRO,
+   高度≈421km 周期≈93.0min」)。ここまでは受け入れ基準6前半(即時整合)に相当し、実行誤差を
+   知らない「コマンド通りの結果」を表示する。
+4. **OD開始**: `SCC.od.reset(SCC.orbitの現在TLE, atDate)` を呼び観測収集(`COLLECTING`)を開始。
+   ログ `[OD] 軌道決定開始 — 観測収集中` を出力。
+5. **観測生成**(メインループ、`COLLECTING`中のみ): 可視中(`antenna.lock`)の各局について、
+   前回観測から5シミュレーション秒以上経過していれば `trueOrbit.lookAngles(station, simTime)` から
+   range/az/elを求め、観測ノイズ(range: `N(0,0.02)`km、az/el: `N(0,0.15)`°)を加えて
+   `SCC.od.addObs()` する。
+6. **フィット駆動と採用**: 毎tick末尾で `SCC.od.step(simTime)` を呼ぶ。フィットが収束・採用条件
+   (§4.6)を満たすと `{tle, stats}` が返り、`SCC.orbit.setTLE(...)` → `recalcPasses()` /
+   `recalcTrack()` を実行し、地上表示軌道を実行誤差込みの真の軌道へ補正する。ログ例:
+   「[OD] 軌道決定完了 — 残差RMS 20m / σpos 93m / 観測150点(2局) — 予測軌道との差 2.34km を補正」。
+   これが受け入れ基準6後半(OD収束後の補正)に相当する。
+7. **状態同期**: 毎tick `S.od = SCC.od.status()` を代入し、ヘッダのODステータスチップ(§2, §5)の
+   表示に使う。
+8. **再噴射時の扱い**: `COLLECTING` 中に別の `PROP_BURN` が実行されると、`SCC.od.reset()` が
+   再度呼ばれ、収集中だった観測は単純に破棄される(新しい噴射後の観測収集がゼロから始まる)。
 
 ## 7. フェーズ2: 通信プロトコル / バックエンド
 
@@ -258,7 +350,7 @@ JSON テキストフレーム。`Date → {"__dt": epochMs}`、`NaN → "__NaN"`
    (ヘッダの DATA SOURCE が WS LINK / LOCAL SIM / RECONNECT... を表示)。
 
 ### 7.3 バックエンド(server/server.mjs, 依存ゼロNode)
-- フロントエンドと**同一の** state.js / orbit.js / mockdata.js / proto.js をロードして
+- フロントエンドと**同一の** state.js / orbit.js / orbitdet.js / mockdata.js / proto.js をロードして
   シミュレータをサーバ側で実行し、bus イベントをWSへブリッジする。
 - `--tle <file>` で実TLE読み込み(2行/3行形式)。`--config <json>` で rotctld アダプタ設定:
   `{"rotators": {"GS-TKY": {"host":"127.0.0.1","port":4533}}}`
@@ -273,5 +365,12 @@ JSON テキストフレーム。`Date → {"__dt": epochMs}`、`NaN → "__NaN"`
 3. パス予測と地図・スカイプロット・スケジュール・アンテナ挙動が同一の軌道計算に基づき整合する。
 4. ×600 倍速にしてパスを跨いだとき、AOS/LOS・追尾・RSSI・ログ・キュー消化が連動する。
 5. コンソールにエラーが出ない。
-6. `PROP_BURN` 実行後、地図/スカイプロット/パススケジュール/ヘッダAOSカウントダウンが同一tick内
-   (遅くとも次tick)で新軌道要素に基づき整合し、旧要素ベースの矛盾したパス予測が残らないこと。
+6. `PROP_BURN` 実行後、以下の2段階で軌道表示が整合すること。
+   (1) 実行直後: コマンド通り(誤差なしの)予測軌道要素に基づき、地図/スカイプロット/
+       パススケジュール/ヘッダAOSカウントダウンが同一tick内(遅くとも次tick)で整合し、旧要素
+       ベースの矛盾したパス予測が残らないこと。
+   (2) OD収束後: 観測ベース軌道決定(§4.6, §6.2)が収束すると、これらの表示が実行誤差込みの
+       真の軌道へ再補正されること。
+7. `PROP_BURN` 後、OD(§4.6)が観測を収集し、パス中に収束すると表示軌道が実軌道へ補正され、
+   ヘッダのODチップ(§2)とログ(`[OD]` ソース)で進行状況(観測収集中→収束→補正量)が
+   確認できること。

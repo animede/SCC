@@ -1,20 +1,41 @@
 /* SCC mockdata — フェーズ1シミュレータ
    軌道計算(orbit.js)と整合するテレメトリ・アンテナ挙動・通信イベントを生成する。
-   フェーズ2ではこのファイルを WebSocket クライアントに差し替える(公開APIは SCC.ops のみ)。 */
+   フェーズ2ではこのファイルを WebSocket クライアントに差し替える(公開APIは SCC.ops のみ)。
+
+   フェーズ3(観測ベースOD): 「物理的現実(衛星の実位置・電波)」と「地上の知識(予測軌道・
+   スケジュール)」を明示的に分離する。
+     - trueOrbit: 真の軌道。PROP_BURN の実行誤差込みの実際の状態を保持。メインループの
+       propagate、stepAntenna の自動追尾ターゲット/リンク品質、stepTelemetry の食判定、
+       checkPassEdges の可視判定、観測(レンジ/Az/El)生成に使う。
+     - SCC.orbit: 地上が知っている予測軌道。recalcPasses/recalcTrack/orbitNo/ALT/PERIOD
+       など、従来どおり画面表示・スケジューリングに使う。PROP_BURN 直後は「コマンド通りの
+       Δv」を適用した即時近似、OD収束後は観測フィットで真の軌道へ補正される。 */
 (function () {
   "use strict";
 
   const S = SCC.state, bus = SCC.bus, orbit = SCC.orbit;
+  const trueOrbit = SCC.createOrbit();   // 真の軌道 (地上からは直接観測できない「実際」)
   const LAUNCH = Date.UTC(2025, 10, 15, 2, 30, 0);   // 打上げ (MET基準)
   const rnd = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const approach = (cur, target, dt, tau) => cur + (target - cur) * (1 - Math.exp(-dt / tau));
+
+  /* Box-Muller: 標準正規乱数 (平均0, 分散1) */
+  function gaussRand() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  const gauss = (sigma) => gaussRand() * sigma;
 
   let cmdSeq = 1;
   let lastPassCalc = 0;      // パス一覧を計算した simTime [ms]
   let lastTrackCalc = 0;     // 地上軌跡を計算した simTime [ms]
   const visible = {};        // 局ID → 可視状態 (AOS/LOSエッジ検出用)
   const latched = {};        // アラームID → ラッチ中フラグ
+  const lastObsMs = {};      // 局ID → 前回OD観測を生成した simTime [ms]
+  const OBS_INTERVAL_S = 5;  // OD観測生成間隔 (シミュレーション秒)
 
   /* ---------- ログ ---------- */
   function log(level, source, msg) {
@@ -99,7 +120,7 @@
     if (a.autoTrack) {
       const nxt = nextPass(st.id);
       if (act) {
-        const look = orbit.lookAngles(st, S.simTime);
+        const look = trueOrbit.lookAngles(st, S.simTime);   // 自動追尾は電波の実測(真値)を追う
         tgtAz = look.az; tgtEl = Math.max(0, look.el);
       } else if (nxt && nxt.aos.getTime() - S.simTime.getTime() < 180e3) {
         tgtAz = nxt.aosAz; tgtEl = orbit.MIN_EL;      // AOS 3分前: AOS方位へ振り向け
@@ -125,9 +146,9 @@
     if (a.mode !== prevMode && (a.mode === "TRACKING" || prevMode === "TRACKING"))
       log("info", st.id, a.mode === "TRACKING" ? "追尾開始 (TRACKING)" : "追尾終了");
 
-    // リンク品質
+    // リンク品質 (電波の閉ループ追尾なので真値=trueOrbit基準)
     if (act) {
-      const look = orbit.lookAngles(st, S.simTime);
+      const look = trueOrbit.lookAngles(st, S.simTime);
       const err = Math.hypot(((look.az - a.az + 540) % 360) - 180, look.el - a.el);
       if (look.el > orbit.MIN_EL && err < 2.5) {
         a.rssi = -90 - 20 * Math.log10(look.range / 600) + rnd(-1.5, 1.5);
@@ -154,7 +175,7 @@
   /* ---------- テレメトリ ---------- */
   function stepTelemetry(dt) {
     const tlm = S.sat.telemetry;
-    const inEclipse = orbit.eclipsed(S.sat.eci, S.simTime);
+    const inEclipse = trueOrbit.eclipsed(S.sat.eci, S.simTime);  // 食は物理的現実(真値)で判定
     const link = bestLink();
     const txOn = !!link;
 
@@ -290,18 +311,50 @@
         return;
       }
       const dvKms = dvMps / 1000;
-      const dvRsw = {
+      const dvRswCmd = {
         radial: (sign.radial || 0) * dvKms,
         along: (sign.along || 0) * dvKms,
         cross: (sign.cross || 0) * dvKms,
       };
-      const ok = orbit.applyBurn(dvRsw, new Date(S.simTime));
-      if (ok) {
-        recalcPasses(); recalcTrack();
-        log("warn", "PROP", `PROP_BURN 実行完了 — Δv=${dvMps}m/s ${dir}, 高度≈${orbit.ALT.toFixed(0)}km 周期≈${(orbit.PERIOD / 60).toFixed(1)}min`);
-      } else {
-        log("serious", "PROP", "PROP_BURN 適用失敗 — 軌道要素異常のため無視");
+      const atDate = new Date(S.simTime);
+
+      // ---- 1. 実行誤差込みのΔvを生成 (真の軌道用) ----
+      //   大きさ: ×(1+N(0,0.02))、方向: 指定軸から標準偏差0.5°の微小傾き。
+      //   指定軸に直交する2軸成分に N(0, dv·sin(0.5°)) を加える簡易実装。
+      const magErr = 1 + gauss(0.02);
+      const tiltSigma = dvKms * Math.sin(0.5 * Math.PI / 180);
+      const axes = ["radial", "along", "cross"];
+      const mainAxis = axes.find(ax => dvRswCmd[ax] !== 0);
+      const dvRswTrue = { radial: 0, along: 0, cross: 0 };
+      for (const ax of axes) dvRswTrue[ax] = dvRswCmd[ax] * magErr;
+      for (const ax of axes) {
+        if (ax === mainAxis) continue;
+        dvRswTrue[ax] += gauss(tiltSigma);
       }
+
+      // ---- 2. 真の軌道を更新 ----
+      const okTrue = trueOrbit.applyBurn(dvRswTrue, atDate);
+      if (!okTrue) {
+        log("serious", "PROP", "PROP_BURN 適用失敗 — 軌道要素異常のため無視");
+        return;
+      }
+
+      // ---- 3. 地上予測: コマンド通りのΔv(誤差なし)を作業インスタンスに適用し、
+      //         その結果を地上表示軌道(SCC.orbit)へ即時反映(受け入れ基準6の前半: 即時整合) ----
+      const scratch = SCC.createOrbit();
+      scratch.setTLE(orbit.getTLE().line1, orbit.getTLE().line2);
+      const okPred = scratch.applyBurn(dvRswCmd, atDate);
+      if (okPred) {
+        const predTle = scratch.getTLE();
+        orbit.setTLE(predTle.line1, predTle.line2);
+      }
+      recalcPasses(); recalcTrack();
+      log("warn", "PROP", `PROP_BURN 実行完了 — Δv=${dvMps}m/s ${dir}, 高度≈${orbit.ALT.toFixed(0)}km 周期≈${(orbit.PERIOD / 60).toFixed(1)}min`);
+
+      // ---- 4. OD開始 (地上予測TLEをpriorとして観測収集へ) ----
+      const priorTle = orbit.getTLE();
+      SCC.od.reset([priorTle.line1, priorTle.line2], atDate);
+      log("info", "OD", "軌道決定開始 — 観測収集中");
     }
   }
 
@@ -353,7 +406,7 @@
   /* ---------- AOS/LOS エッジ ---------- */
   function checkPassEdges() {
     for (const st of S.stations) {
-      const el = orbit.lookAngles(st, S.simTime).el;
+      const el = trueOrbit.lookAngles(st, S.simTime).el;   // 可視判定は電波の実際(真値)
       const vis = el > orbit.MIN_EL;
       if (vis !== !!visible[st.id]) {
         visible[st.id] = vis;
@@ -363,6 +416,30 @@
           : `LOS ${st.id}`);
         bus.emit("pass-change", { type: vis ? "AOS" : "LOS", station: st.id, pass });
       }
+    }
+  }
+
+  /* ---------- OD観測生成 ----------
+     ODが観測収集中(COLLECTING)のとき、可視中(lock)の局から一定間隔で
+     レンジ/Az/El観測をノイズ付きで生成し SCC.od.addObs() する。真の視線(trueOrbit)を
+     観測ノイズで汚したものが「地上局が受け取る観測」というモデル。 */
+  function stepOdObservations() {
+    if (SCC.od.status().state !== "COLLECTING") return;
+    const tMs = S.simTime.getTime();
+    for (const st of S.stations) {
+      if (!st.antenna.lock) continue;
+      const last = lastObsMs[st.id] || 0;
+      if (tMs - last < OBS_INTERVAL_S * 1000) continue;
+      lastObsMs[st.id] = tMs;
+      const look = trueOrbit.lookAngles(st, S.simTime);
+      if (!(look.el > orbit.MIN_EL)) continue;
+      SCC.od.addObs({
+        tMs,
+        station: { id: st.id, lat: st.lat, lon: st.lon, altKm: 0 },
+        rangeKm: look.range + gauss(0.02),
+        azDeg: look.az + gauss(0.15),
+        elDeg: look.el + gauss(0.15),
+      });
     }
   }
 
@@ -385,7 +462,7 @@
       if (S.simTime.getTime() - lastPassCalc > 30 * 60e3) recalcPasses();
       for (const p of S.passes) p.status = passStatusOf(p);
 
-      const pos = orbit.propagate(S.simTime);
+      const pos = trueOrbit.propagate(S.simTime);   // 衛星の実位置は真の軌道から
       S.sat.pos = { lat: pos.lat, lon: pos.lon, alt: pos.alt };
       S.sat.eci = pos.eci; S.sat.vel = pos.vel;
 
@@ -393,6 +470,7 @@
       stepTelemetry(dt);
       stepCommands(dt);
       stepDownlink(dt);
+      stepOdObservations();
     }
 
     S.met = (S.simTime.getTime() - LAUNCH) / 1000;
@@ -401,6 +479,16 @@
     checkPassEdges();
     checkContactEdges();
     checkAlarms();
+
+    // OD駆動: 収束したら地上表示軌道(TLE)を補正
+    const fit = SCC.od.step(S.simTime.getTime());
+    if (fit) {
+      orbit.setTLE(fit.tle[0], fit.tle[1]);
+      recalcPasses(); recalcTrack();
+      log("warn", "OD", `軌道決定完了 — 残差RMS ${fit.stats.rmsM.toFixed(0)}m / σpos ${fit.stats.sigmaPosM.toFixed(0)}m / 観測${fit.stats.nObs}点(${fit.stats.nStations}局) — 予測軌道との差 ${fit.stats.corrKm.toFixed(2)}km を補正`);
+    }
+    S.od = SCC.od.status();
+
     bus.emit("tick", S);
   }
 
@@ -461,6 +549,10 @@
 
   /* ---------- 初期化 ---------- */
   function init() {
+    // 真の軌道を地上予測(SCC.orbit、--tle 反映済み)と同一TLEで初期化
+    const t0 = orbit.getTLE();
+    trueOrbit.setTLE(t0.line1, t0.line2);
+
     // 「まもなく東京局のパスが来る」時刻にエポックを合わせる (画面が映える)
     const base = new Date();
     const tky = S.stations[0];
@@ -469,12 +561,13 @@
 
     recalcPasses();
     recalcTrack();
-    const pos = orbit.propagate(S.simTime);
+    const pos = trueOrbit.propagate(S.simTime);
     S.sat.pos = { lat: pos.lat, lon: pos.lon, alt: pos.alt };
     S.sat.eci = pos.eci;
     S.sat.telemetry.cdh.uptime = rnd(20, 200) * 86400 / 10;
-    for (const st of S.stations) visible[st.id] = orbit.lookAngles(st, S.simTime).el > orbit.MIN_EL;
+    for (const st of S.stations) visible[st.id] = trueOrbit.lookAngles(st, S.simTime).el > orbit.MIN_EL;
     inContact = S.contact.windows.some(w => w.start <= S.simTime && S.simTime <= w.end); // 起動時の誤ログ防止
+    S.od = SCC.od.status();
 
     // 初期ダウンリンクキュー
     S.downlink.files = [
