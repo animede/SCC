@@ -100,3 +100,9 @@ server/test.mjs        セルフテスト(偽rotctld込み、`node server/test.m
 UIに反映される。URLパラメータ: `?mode=mock`(ローカル強制)/ `?ws=ws://host:port/ws`(接続先指定)。
 
 詳細仕様は [SPEC.md](SPEC.md) を参照。
+
+## ライセンス
+
+本リポジトリのソースコードは [Apache License 2.0](LICENSE) で提供します。
+著作権者: © 2026 YUZUKI (animede)。著作権表示と [NOTICE](NOTICE) の内容は、再配布時も保持してください。
+モデルや依存ライブラリ等には各配布元のライセンスが別途適用されます。
